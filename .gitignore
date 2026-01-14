@@ -7,6 +7,16 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# ignoring internal files here
+*.env
+.env
+*.cnf
+openssl.cnf
+*.key
+server.key
+*.cert
+server.cert
+
 node_modules
 dist
 dist-ssr
