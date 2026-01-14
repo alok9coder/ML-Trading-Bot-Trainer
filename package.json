@@ -1,0 +1,23 @@
+{
+  "name": "ml-trading-bot-trainer",
+  "version": "1.0.0",
+  "description": "This Project has a Frontend created for a Candle Chart to Display Historical Candles of a Day of a particular instrument and the candles are clickable, we click on them to select them as a BUY entry or SELL entry when preparing Data for Entry Logic and vice versa when preparing Data for Exit Logic. And then use that data to prepare CSV file for ML.",
+  "homepage": "https://github.com/alok9coder/ML-Trading-Bot-Trainer#readme",
+  "bugs": {
+    "url": "https://github.com/alok9coder/ML-Trading-Bot-Trainer/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alok9coder/ML-Trading-Bot-Trainer.git"
+  },
+  "license": "ISC",
+  "author": "Alok",
+  "type": "mjs",
+  "main": "app.js",
+  "scripts": {
+    "test": "nodemon app.js"
+  },
+  "dependencies": {
+    "nodemon": "^3.1.11"
+  }
+}
