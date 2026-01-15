@@ -12,12 +12,21 @@
   },
   "license": "ISC",
   "author": "Alok",
-  "type": "mjs",
+  "type": "module",
   "main": "app.js",
   "scripts": {
     "test": "nodemon app.js"
   },
   "dependencies": {
-    "nodemon": "^3.1.11"
+    "body-parser": "^2.2.2",
+    "dayjs": "^1.11.19",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "https": "^1.0.0",
+    "kiteconnect": "^5.1.0",
+    "nodemon": "^3.1.11",
+    "path": "^0.12.7",
+    "pg": "^8.17.1",
+    "url": "^0.11.4"
   }
 }
