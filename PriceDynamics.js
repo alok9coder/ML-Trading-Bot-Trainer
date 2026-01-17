@@ -34,6 +34,8 @@ export function calculatePriceDerivatives(series, lookback = 10) {
 export function calculateMeanVelAcc(series, lookback = 10) {
     if (!Array.isArray(series) || series.length < lookback) {
         return {
+            velocity: [],
+            acceleration: [],
             avgVelocity: null,
             avgAcceleration: null,
             candleSequence: series[series.length - 1]?.candleSequence ?? null,

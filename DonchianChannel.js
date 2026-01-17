@@ -48,14 +48,14 @@ export function getDonchianScore(series, period = 20) {
         candleSequence,
     } = calculateDonchianChannel(series, period);
 
-    let score = null;
+    let donchianScore = null;
     const lastCandle = series[series.length - 1];
     const lastPrice = lastCandle.close;
 
     const upperRange = upperBand  - middleBand;  // will return a +ve value.
     const lowerRange = middleBand - lowerBand;  // will return a +ve value.
 
-    score = lastPrice > middleBand ?
+    donchianScore = lastPrice > middleBand ?
         (lastPrice - middleBand) / upperRange * 100 :
         (lastPrice < middleBand ?
             (lastPrice - middleBand) / lowerRange * 100 :
@@ -63,7 +63,7 @@ export function getDonchianScore(series, period = 20) {
         );
     
     return {
-        score,
+        donchianScore,
         candleSequence,
     }
 }
