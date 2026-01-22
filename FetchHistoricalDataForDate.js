@@ -37,7 +37,14 @@ export default async function fetchHistoricalDataForDate(
         );
 
         // Request historical candles
-        const res = await kc.getHistoricalData(token, interval, fromUtc, toUtc, false, false);
+        const res = await kc.getHistoricalData(
+            token,
+            interval,
+            fromUtc,
+            toUtc,
+            false,
+            false
+        );
 
         const rows = Array.isArray(res?.candles) ? res.candles : Array.isArray(res) ? res : [];
         if (!rows.length) {

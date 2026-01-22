@@ -8,13 +8,15 @@ export function calculatePriceDerivatives(series, lookback = 10) {
     }
 
     const slice = series.slice(-lookback);
+    //console.log(`Series in Velocity -> ${JSON.stringify(series[0])}`);
+    //console.log(`Slice in Velocity -> ${JSON.stringify(slice[0])}`);
     const velocity = [];
     const acceleration = [];
 
     // Step 1: Calculate velocity percentage
     for (let i = 0; i < slice.length - 1; i++) {
         if (slice[i] === 0) continue;
-        const vel = (slice[i + 1] - slice[i]) / slice[i] * 100;
+        const vel = (slice[i + 1].close - slice[i].close) / slice[i].close * 100;
         velocity.push(vel);
     }
 

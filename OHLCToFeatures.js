@@ -16,11 +16,11 @@ import { getDonchianScore } from "./DonchianChannel.js";
  *
  *      // =========================================================
  *      // ---- Raw OHLCV (current candle t)
- *      open_t: 250.30,
- *      high_t: 251.90,
- *      low_t: 249.80,
- *      close_t: 251.40,
- *      volume_t: 184320,
+ *      open: 250.30,
+ *      high: 251.90,
+ *      low: 249.80,
+ *      close: 251.40,
+ *      volume: 184320,
  *
  *      // ---- Candle geometry (t)
  *      range_hl_t: 2.10,                      // high_t - low_t
@@ -66,16 +66,31 @@ import { getDonchianScore } from "./DonchianChannel.js";
  *      volume_ratio_t: 1.32,                  // volume_t / avg_volume_5
  *
  *      // =========================================================
- *      // ---- Structural indicator (context only)
- *      donchian_score: 65,                    // 0–100
+ *      // ---- Structural indicator (Donchian Channel)
+ *      donchian_score: 65,                    // Directional position (%)
+ *                                           // +ve → above middle band
+ *                                           // -ve → below middle band
+ *
+ *      donchian_width: 3.42,                  // (upper - lower) / middle * 100
+ *                                           // Measures range compression / expansion
+ *
+ *      donchian_width_delta_5: -0.80,         // Width change vs t-5
+ *                                           // -ve → squeezing
+ *                                           // +ve → expanding
+ *
+ *      donchian_width_delta_10: -1.45,        // Width change vs t-10
+ *                                           // Medium-term regime shift
+ *
+ *      donchian_score_trend: 180,             // Sum of last 5 Donchian scores
+ *                                           // Directional persistence / acceptance
  *
  *      // =========================================================
  *      // ---- Target label (SUPERVISED LEARNING)
  *      label: 1                               // BUY=1 | HOLD=0 | SELL=-1
  * }
- */
+**/
 
-export function ohlcToFeatures(ohlc, date) {
+export function ohlcToFeatures(ohlc, date, symbol) {
     if (!Array.isArray(ohlc))
         throw new Error(`OHLC data is Invalid!`);
     if (ohlc.length === 0)
@@ -84,14 +99,17 @@ export function ohlcToFeatures(ohlc, date) {
         throw new Error(`Date provided is Invalid!`);
 
     const selectedDay = dayjs(date);
+    //console.log(`Selected Day =>>> ${selectedDay}`);
+    //console.log(`OHLC Received ===> ${JSON.stringify(ohlc[0])}`);
 
-    const selectedDateOHLC = ohlc.filter(
+    const selectedDayOHLC = ohlc.filter(
         (candle) =>
             dayjs(candle.timestamp ?? candle.date).isSame(selectedDay, "day")
-    ).map(
+    );
+    //console.log(`SELECTED Day OHLC -> ${JSON.stringify(selectedDayOHLC[0])}`);
+    
+    const selectedDateOHLC = selectedDayOHLC.map(
         (candle, i) => ({
-            ...candle,
-            candleSequence: i + 1, // 1-based index (9:15 candle = 1)
             candleColor: (
                 candle.close > candle.open ?
                     "GREEN" :
@@ -101,18 +119,20 @@ export function ohlcToFeatures(ohlc, date) {
                             "DOJI"
                     )
             ),
+            ...candle,
+            candleSequence: i + 1, // 1-based index (9:15 candle = 1)
         })
     );
-    
+    console.log(`SELECTED Date OHLC -> ${JSON.stringify(selectedDateOHLC[0])}`);
+
     const previousDayOHLC = ohlc.filter(
         (candle) =>
             dayjs(candle.timestamp ?? candle.date).isBefore(selectedDay, "day")
     )
+    console.log(`PREVIOUS Day OHLC -> ${JSON.stringify(previousDayOHLC[0])}`);
     
     const previousDateOHLC = previousDayOHLC.map(
         (candle, i) => ({
-            ...candle,
-            candleSequence: i - previousDayOHLC.length, // gives -ve index for previous day candles
             candleColor: (
                 candle.close > candle.open ?
                     "GREEN" :
@@ -121,9 +141,12 @@ export function ohlcToFeatures(ohlc, date) {
                             "RED" :
                             "DOJI"
                     )
-            )
+            ),
+            ...candle,
+            candleSequence: i - previousDayOHLC.length, // gives -ve index for previous day candles
         })
     );
+    //console.log(`PREVIOUS Date OHLC -> ${JSON.stringify(previousDateOHLC[0])}`);
     
     // CALCULATE THE FEATURES OF THE CANDLE AND THEN BUILD THE FEATURE OBJECT ARRAY
     // velocity, acceleration, mean_velocity, mean_acceleration -> calculateMeanVelAcc()
@@ -131,7 +154,7 @@ export function ohlcToFeatures(ohlc, date) {
     // donchian_score -> getDonchianScore()
     // After calculating all, map all of this into selectedDateOHLC again!
 
-    const minLookBack = 20;
+    const minLookBack = 30;
     const prevCandles = previousDateOHLC.slice(-minLookBack);
     const seedLength = prevCandles.length;
     const fusedCandles = prevCandles.concat(selectedDateOHLC);
@@ -153,6 +176,10 @@ export function ohlcToFeatures(ohlc, date) {
         } = calculateAvgTrueRange(slice);
 
         const {
+            donchianScoreTrend,
+            donchianWidthDelta5,
+            donchianWidthDelta10,
+            donchianWidth,
             donchianScore,
         } = getDonchianScore(slice);
 
@@ -167,6 +194,10 @@ export function ohlcToFeatures(ohlc, date) {
             avg_range: avgRange,
             avg_volume: avgVolume,
             donchian_score: donchianScore,
+            donchian_width: donchianWidth,
+            donchian_width_delta_5: donchianWidthDelta5,
+            donchian_width_delta_10: donchianWidthDelta10,
+            donchian_score_trend: donchianScoreTrend,
             
             // Some other features directly calculating and appending here.
             // ---- Candle geometry (t0)
@@ -178,9 +209,6 @@ export function ohlcToFeatures(ohlc, date) {
             // ---- Normalization helpers (t0)
             range_ratio_t: (candle.high - candle.low) / avgRange,
             volume_ratio_t: candle.volume / avgVolume,
-
-            // Target Label (SUPERVISED LEARNING)
-            label: 0,       // BUY=1 | HOLD=0 | SELL=-1
         }
 
         for (let j = 0; j < velocity.length; j++) {
@@ -191,8 +219,14 @@ export function ohlcToFeatures(ohlc, date) {
             featureRow[`acc_t${j}`] = acceleration[acceleration.length - 1 - j];
         }
 
-        selectedDateOHLC[i] = featureRow;
+        selectedDateOHLC[i] = {
+            instrument: symbol,
+            ...featureRow,
+            // Target Label (SUPERVISED LEARNING)
+            label: 0,       // BUY=1 | HOLD=0 | SELL=-1
+        };
     }
+    //console.log(`Finalized OHLC -> ${JSON.stringify(selectedDateOHLC[0], null, "\t")}`);
 
     return selectedDateOHLC;
 }
