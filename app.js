@@ -7,11 +7,12 @@ import https from "https";
 import env from "dotenv";
 import fs from "node:fs";
 import dayjs from "dayjs";
+import isSameOrBefore from "dayjs/plugin/isSameOrBefore.js";
 import { KiteConnect, KiteTicker } from "kiteconnect";
 import { DEBUG_LOGS, INSTRUMENTS } from "./Macros.js"
 import { ohlcToFeatures } from "./OHLCToFeatures.js";
 import CSVReadWrite from "./CSVReadWrite.js";
-import { homepage } from "./HomePageString.js";
+import { homepage, symbolClusterPage } from "./HomePageString.js";
 
 const app  = express();
 const port = 8888;
@@ -21,6 +22,8 @@ const __dirname = path.dirname(__filename);
 console.log("Directory Name -> ", __dirname);
 
 env.config();
+
+dayjs.extend(isSameOrBefore);
 
 // Config
 const apiKey = process.env.API_KEY;
@@ -103,8 +106,9 @@ app.get("/", async (req, res) => {
     console.log(`[INFO] Authenticated user: ${req.session.userID}`);
 
     // Serve React frontend (or static HTML/SPA)
-    res.sendFile(path.join(__dirname, "frontend", "dist", "index.html"));
+    //res.sendFile(path.join(__dirname, "frontend", "dist", "index.html"));
     //res.send(homepage);
+    res.send(symbolClusterPage);
 });
 
 // Serve the Login URL
@@ -188,19 +192,38 @@ app.get("/profile", async (req, res) => {
 
 // Backend API endpoint to return return OHLC for the requested Date
 app.post("/api/ohlc", async (req, res) => {
-    console.log(req);
+    //console.log(req);
     const { symbol, date } = req.body;
     console.log(`Symbol -> ${symbol} | Date -> ${date}`);
-    
+
     try {
         let ohlc = await fetchHistoricalData(symbol, date);
         ohlc = ohlcToFeatures(ohlc, date, symbol);
         console.log(`ohlc -> ${JSON.stringify(ohlc[0], null, "\t")}`);
+        const entryCandles = await writeEntryCandles(ohlc);
+        //console.log(`Entry Candles -> ${JSON.stringify(entryCandles.slice(0, 20), null, "\t")}`);
+        const exitCandles = await writeExitCandles(ohlc);
+        //console.log(`Exit Candles -> ${JSON.stringify(exitCandles.slice(0, 20), null, "\t")}`);
         res.json(ohlc);
         //res.json({ response: "WORKING!" });
     } catch (error) {
-        console.error("Failed to fetch OHLC Data: ", error);
+        console.error("Failed to fetch OHLC Data: ", error.message);
         res.status(500).json({ error });
+    }
+});
+
+// Backend API endpoint to create CSV Super Cluster for the Selected Symbol.
+app.post("/api/symbol-super-cluster-csv", async (req, res) => {
+    const { symbol } = req.body;
+    console.log(`Symbol -> ${symbol}`);
+
+    try {
+        const result = await createSuperClusterCSV(symbol);
+        console.log(result);
+        res.status(200).json({ message: result });
+    } catch (error) {
+        console.error("FAILED to Create Super Cluster CSV: ", error.message);
+        res.status(500).json(JSON.stringify({ error }));
     }
 });
 
@@ -230,8 +253,67 @@ server.listen(port, (req, res) => {
     console.log(`HTTPS Server is Listening on port: ${port}`);
 });
 
+async function createSuperClusterCSV(symbol) {
+    const startDate = "2024-01-01";
+    const today = dayjs();
+    let day = dayjs(startDate);
+
+    const MAX_RETRIES_PER_DAY = 3;
+
+    const entrySuperCluster = [];
+    const entryTypeSuperCluster = [];
+    const exitSuperCluster = [];
+
+    console.log(`Started fetching data and creating Super Clusters for ${symbol} since ${startDate}`);
+
+    while (day.isSameOrBefore(today)) {
+        try {
+            console.log("Processing date:", day.format("YYYY-MM-DD"));
+
+            let ohlc = await fetchHistoricalData(symbol, day);
+            if ([0, 6].includes(day.day()) || ohlc.length === 0) {
+                day = day.add(1, "day");
+                continue;
+            }
+            ohlc = ohlcToFeatures(ohlc, day, symbol);
+            const entryCluster = await writeEntryCandles(structuredClone(ohlc));
+            const entryTypeCluster = await writeEntryTypeCandles(structuredClone(ohlc));
+            const exitCluster = await writeExitCandles(structuredClone(ohlc));
+
+            entrySuperCluster.push(...entryCluster);
+            entryTypeSuperCluster.push(...entryTypeCluster);
+            exitSuperCluster.push(...exitCluster);
+            day = day.add(1, "day");
+        } catch (error) {
+            console.error(`Error Fetching Historical Data and Creating Super Clusters! ${error.message}`);
+        }
+    }
+    
+    try {
+        const dataFolder = "Data";
+
+        const entryFilePath = path.join(__dirname, dataFolder, `${symbol}_Entry.csv`);
+        const entryTypeFilePath = path.join(__dirname, dataFolder, `${symbol}_Entry_Type.csv`);
+        const exitFilePath = path.join(__dirname, dataFolder, `${symbol}_Exit.csv`);
+
+        const entryCSV = new CSVReadWrite(entryFilePath);
+        const entryTypeCSV = new CSVReadWrite(entryTypeFilePath);
+        const exitCSV = new CSVReadWrite(exitFilePath);
+
+        entryCSV.appendCSV(entrySuperCluster, entryFilePath);
+        entryTypeCSV.appendCSV(entryTypeSuperCluster, entryTypeFilePath);
+        exitCSV.appendCSV(exitSuperCluster, exitFilePath);
+
+        console.log("Writing Super Clusters to CSV Files Successful!");
+        return ("Writing Super Clusters to CSV Files Successful!");
+    } catch (error) {
+        console.error(`Error Writing to Super Clusters to CSV Files! ${error.message}`);
+    }
+
+    return ("Something when Writing Super Clusters to CSV, Didn't go right!");
+}
+
 async function fetchHistoricalData(symbol, date, days = 3, interval = "minute") {
-    let ohlc = [];
     let historicalData = [];
     const MAX_RETRIES = 5;
 
@@ -280,10 +362,190 @@ async function fetchHistoricalData(symbol, date, days = 3, interval = "minute") 
 }
 
 async function writeEntryCandles(ohlc) {
+    
+    const targetProfit = 0.2;
 
+    let entryPrice = null;
+    let exitPrice = null;
+
+    let entered = false;
+
+    let trend = null;
+
+    const len = ohlc.length;
+
+    for (let i = 0; i < len - 1; i++) {
+        entered = false;
+        entryPrice = ohlc[i].open;
+        //console.log("i_0", i);
+        trend = ohlc[i].candleColor;
+        exitPrice = trend === "GREEN"
+            ? ohlc[i].high
+            : (trend === "RED"
+                ? ohlc[i].low
+                : ohlc[i].close
+            );
+        
+        for (let j = i + 1; j < len; j++) {
+            exitPrice = trend === "GREEN"
+                ? Math.max(exitPrice, ohlc[j].high)
+                : (trend === "RED"
+                    ? Math.min(exitPrice, ohlc[j].low)
+                    : ohlc[j]
+                )
+            const priceDiff = (exitPrice - entryPrice) / entryPrice * 100;
+            if (
+                ohlc[i].candleColor !== ohlc[j].candleColor &&
+                priceDiff >= targetProfit &&
+                ohlc[i].candleColor === "GREEN" &&
+                !entered
+            ) {
+                entered = true;
+                ohlc[i].label = 1;
+                i = j - 1;
+                //console.log("i_1 G", i, "j", j);
+                break;
+            } else if (
+                ohlc[i].candleColor !== ohlc[j].candleColor &&
+                priceDiff <= -targetProfit &&
+                ohlc[i].candleColor === "RED" &&
+                !entered
+            ) {
+                entered = true;
+                ohlc[i].label = 1;
+                i = j - 1 ;
+                //console.log("i_1 R", i, "j", j);
+                break;
+            }
+        } //console.log("i_2", i);
+    }
+
+    return ohlc;
+}
+
+async function writeEntryTypeCandles(ohlc) {
+
+    const targetProfit = 0.2;
+
+    let entryPrice = null;
+    let exitPrice = null;
+
+    let entered = false;
+
+    let trend = null;
+
+    const len = ohlc.length;
+
+    for (let i = 0; i < len - 1; i++) {
+        entered = false;
+        entryPrice = ohlc[i].open;
+        //console.log("i_0", i);
+        trend = ohlc[i].candleColor;
+        exitPrice = trend === "GREEN"
+            ? ohlc[i].high
+            : (trend === "RED"
+                ? ohlc[i].low
+                : ohlc[i].close
+            );
+        
+        for (let j = i + 1; j < len; j++) {
+            exitPrice = trend === "GREEN"
+                ? Math.max(exitPrice, ohlc[j].high)
+                : (trend === "RED"
+                    ? Math.min(exitPrice, ohlc[j].low)
+                    : ohlc[j]
+                )
+            const priceDiff = (exitPrice - entryPrice) / entryPrice * 100;
+            if (
+                ohlc[i].candleColor !== ohlc[j].candleColor &&
+                priceDiff >= targetProfit &&
+                ohlc[i].candleColor === "GREEN" &&
+                !entered
+            ) {
+                entered = true;
+                ohlc[i].label = 1;
+                i = j - 1;
+                //console.log("i_1 G", i, "j", j);
+                break;
+            } else if (
+                ohlc[i].candleColor !== ohlc[j].candleColor &&
+                priceDiff <= -targetProfit &&
+                ohlc[i].candleColor === "RED" &&
+                !entered
+            ) {
+                entered = true;
+                ohlc[i].label = -1;
+                i = j - 1 ;
+                //console.log("i_1 R", i, "j", j);
+                break;
+            }
+        } //console.log("i_2", i);
+    }
+
+    ohlc = ohlc.filter(c => c.label !== 0);
+
+    return ohlc;
 }
 
 async function writeExitCandles(ohlc) {
-    
-}
+    const targetProfit = 0.2;
 
+    let entryPrice = null;
+    let exitPrice = null;
+
+    let entered = false;
+
+    let trend = null;
+
+    const len = ohlc.length;
+
+    for (let i = 0; i < len - 1; i++) {
+        entered = false;
+        entryPrice = ohlc[i].open;
+        //console.log("i_0", i);
+        trend = ohlc[i].candleColor;
+        exitPrice = trend === "GREEN"
+            ? ohlc[i].high
+            : (trend === "RED"
+                ? ohlc[i].low
+                : ohlc[i].close
+            );
+        
+        for (let j = i + 1; j < len; j++) {
+            exitPrice = trend === "GREEN"
+                ? Math.max(exitPrice, ohlc[j].high)
+                : (trend === "RED"
+                    ? Math.min(exitPrice, ohlc[j].low)
+                    : ohlc[j]
+                )
+            const priceDiff = (exitPrice - entryPrice) / entryPrice * 100;
+            if (
+                ohlc[i].candleColor !== ohlc[j].candleColor &&
+                priceDiff >= targetProfit &&
+                ohlc[i].candleColor === "GREEN" &&
+                !entered
+            ) {
+                entered = true;
+                ohlc[j].label = -1;
+                i = j - 1;
+                //console.log("i_1 G", i, "j", j);
+                break;
+            } else if (
+                ohlc[i].candleColor !== ohlc[j].candleColor &&
+                priceDiff <= -targetProfit &&
+                ohlc[i].candleColor === "RED" &&
+                !entered
+            ) {
+                entered = true;
+                ohlc[j].label = 1;
+                i = j - 1 ;
+                //console.log("i_1 R", i, "j", j);
+                break;
+            }
+        } //console.log("i_2", i);
+    }
+
+    ohlc = ohlc.filter(c => c.label !== 0);
+
+    return ohlc;
+}

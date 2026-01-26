@@ -32,3 +32,5 @@ node_modules
 *.njsproj
 *.sln
 *.sw?
+
+Data

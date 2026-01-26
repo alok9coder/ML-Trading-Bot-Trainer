@@ -312,3 +312,95 @@ const demo = `
 </body>
 </html>
 `;
+
+export const symbolClusterPage = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Symbol Super Cluster CSV</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <style>
+        body {
+            background: #f5f6f8;
+            font-family: system-ui, sans-serif;
+            padding: 40px;
+            color: #111;
+        }
+
+        h2 {
+            margin-bottom: 20px;
+        }
+
+        input, button {
+            padding: 10px 14px;
+            font-size: 14px;
+            margin-right: 10px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+
+        button {
+            cursor: pointer;
+            background: #ffffff;
+        }
+
+        button:hover {
+            background: #e9eaec;
+        }
+
+        #status {
+            margin-top: 20px;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+
+<h2>📦 Super Cluster CSV Generator</h2>
+
+<label>Symbol:</label>
+<input id="symbolInput" placeholder="ONGC" />
+
+<button onclick="submitSymbol()">Generate CSV</button>
+
+<div id="status"></div>
+
+<script>
+    async function submitSymbol() {
+        const symbol = document.getElementById("symbolInput").value.trim().toUpperCase();
+        const status = document.getElementById("status");
+
+        if (!symbol) {
+            alert("Symbol required");
+            return;
+        }
+
+        status.innerText = "⏳ Processing...";
+
+        try {
+            const res = await fetch("/api/symbol-super-cluster-csv", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ symbol })
+            });
+
+            const data = await res.json();
+
+            if (!res.ok) {
+                status.innerText = "❌ Error: " + (data.error || "Unknown error");
+            } else {
+                status.innerText = "✅ CSV generated successfully";
+                console.log(data);
+            }
+        } catch (err) {
+            status.innerText = "❌ Request failed";
+            console.error(err);
+        }
+    }
+</script>
+
+</body>
+</html>
+`;
