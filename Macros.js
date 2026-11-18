@@ -31,6 +31,9 @@ export const DEBUG_LOGS = false; // CHANGE! this value to "false" when DEBUGGING
 export const TEST_MODE = false; // CHANGE! this value to "false" when using it in Production Version!
 export const TEST_QTY = 10; // 500 Qty roughly equals to ₹25k worth of Money if 1 share is ₹250.00
 export const TEST_INSTRUMENT = "ONGC";
+export const TARGET_PROFIT = 0.1; // 0.2% Target Profit for Test Mode.
+export const OHLC_DATE = "2025-12-01";
+export const CANDLE_START = 1;
 
 export const HISTORICAL_TEST_MODE = true;
 

@@ -76,7 +76,7 @@ export function getDonchianScore(series, period = 20) {
     const lastCandle = series[series.length - 1];
     const lastPrice = lastCandle.close;
 
-    const upperRange = upperBand  - middleBand;  // will return a +ve value.
+    const upperRange = upperBand - middleBand;  // will return a +ve value.
     const lowerRange = middleBand - lowerBand;  // will return a +ve value.
 
     donchianScore = lastPrice > middleBand ?

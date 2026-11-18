@@ -14,8 +14,8 @@ export function calculateAvgTrueRange(series, period = 5) {
 
     for (let i = 0; i < slice.length; i++) {
         avgRange = avgRange === null ?
-            slice[i].high - slice[i].low :
-            slice[i].high - slice[i].low + avgRange;
+            (slice[i].high - slice[i].low) / slice[i].open * 100 :
+            (slice[i].high - slice[i].low) / slice[i].open * 100 + avgRange;
         avgVolume = avgVolume === null ?
             slice[i].volume :
             slice[i].volume + avgVolume;

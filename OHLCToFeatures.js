@@ -2,6 +2,7 @@ import dayjs from "dayjs";
 import { calculateMeanVelAcc } from "./PriceDynamics.js";
 import { calculateAvgTrueRange } from "./AvgTrueRange.js";
 import { getDonchianScore } from "./DonchianChannel.js";
+import { getBollingerScore } from "./BollingerBands.js";
 
 /**
  * candleFeatureRow = {
@@ -154,7 +155,7 @@ export function ohlcToFeatures(ohlc, date, symbol) {
     // donchian_score -> getDonchianScore()
     // After calculating all, map all of this into selectedDateOHLC again!
 
-    const minLookBack = 30;
+    const minLookBack = 100;
     const prevCandles = previousDateOHLC.slice(-minLookBack);
     const seedLength = prevCandles.length;
     const fusedCandles = prevCandles.concat(selectedDateOHLC);
@@ -162,6 +163,9 @@ export function ohlcToFeatures(ohlc, date, symbol) {
     for (let i = 0; i < selectedDateOHLC.length; i++) {
         const slice = fusedCandles.slice(0, i + 1 + seedLength);
         const candle = selectedDateOHLC[i];
+        const prevCandle = i === 0 ?
+            candle :
+            selectedDateOHLC[i - 1];
 
         const {
             velocity,
@@ -174,6 +178,17 @@ export function ohlcToFeatures(ohlc, date, symbol) {
             avgRange,
             avgVolume,
         } = calculateAvgTrueRange(slice);
+
+        const {
+            bollingerScore,
+            bollingerWidth,
+            bbWidthDeltas,
+            bbWidthDelta5,
+        } = getBollingerScore(slice);
+
+        const D_60 = getDonchianScore(slice, 60);
+        const donchianScore60 = D_60.donchianScore;
+        const donchianWidth60 = D_60.donchianWidth;
 
         const {
             donchianScoreTrend,
@@ -193,11 +208,19 @@ export function ohlcToFeatures(ohlc, date, symbol) {
             mean_acc: avgAcceleration,
             avg_range: avgRange,
             avg_volume: avgVolume,
+
             donchian_score: donchianScore,
             donchian_width: donchianWidth,
             donchian_width_delta_5: donchianWidthDelta5,
             donchian_width_delta_10: donchianWidthDelta10,
             donchian_score_trend: donchianScoreTrend,
+
+            donchian_score_60: donchianScore60,
+            donchian_width_60: donchianWidth60,
+
+            bollinger_score: bollingerScore,
+            bollinger_width: bollingerWidth,
+            bollinger_width_delta_5: bbWidthDelta5,
             
             // Some other features directly calculating and appending here.
             // ---- Candle geometry (t0)
@@ -205,6 +228,8 @@ export function ohlcToFeatures(ohlc, date, symbol) {
             body_oc_t: candle.close - candle.open,
             upper_wick_t: candle.high - Math.max(candle.open, candle.close),
             lower_wick_t: Math.min(candle.open, candle.close) - candle.low,
+
+            body_oc_t1: prevCandle.close - prevCandle.open,
 
             // ---- Normalization helpers (t0)
             range_ratio_t: (candle.high - candle.low) / avgRange,
@@ -217,6 +242,10 @@ export function ohlcToFeatures(ohlc, date, symbol) {
 
         for (let j = 0; j < acceleration.length; j++) {
             featureRow[`acc_t${j}`] = acceleration[acceleration.length - 1 - j];
+        }
+
+        for (let j = 0; j < bbWidthDeltas.length; j++) {
+            featureRow[`bb_width_delta_t${j}`] = bbWidthDeltas[j];
         }
 
         selectedDateOHLC[i] = {

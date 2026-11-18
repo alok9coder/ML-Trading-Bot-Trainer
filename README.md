@@ -1,2 +1,5 @@
 # ML-Trading-Bot-Trainer
-This Project has a Frontend created for a Candle Chart to Display Historical Candles of a Day of a particular instrument and the candles are clickable, we click on them to select them as a BUY entry or SELL entry when preparing Data for Entry Logic and vice versa when preparing Data for Exit Logic. And then use that data to prepare CSV file for ML.
+
+The authenticated frontend provides an NSE candlestick chart for manually labeling long and short entry points. Search for an instrument, select a weekday, load the session, and click candles to set their labels. The Entry, Entry Type, and Exit datasets remain separate.
+
+When `DEV_MODE` is enabled, generated sample candles are shown for chart development only; sample labels cannot be saved. Loading a real session enables **Save labels**, which sends the three datasets to `PUT /api/save-labels`. The backend updates the corresponding `Data/{SYMBOL}_Entry.csv`, `Data/{SYMBOL}_Entry_Type.csv`, and `Data/{SYMBOL}_Exit.csv` files, replacing rows for the selected date while retaining other dates.

@@ -9,10 +9,16 @@ import fs from "node:fs";
 import dayjs from "dayjs";
 import isSameOrBefore from "dayjs/plugin/isSameOrBefore.js";
 import { KiteConnect, KiteTicker } from "kiteconnect";
-import { DEBUG_LOGS, INSTRUMENTS } from "./Macros.js"
+import {
+    DEBUG_LOGS,
+    INSTRUMENTS,
+    OHLC_DATE,
+    TARGET_PROFIT,
+    CANDLE_START,
+} from "./Macros.js"
 import { ohlcToFeatures } from "./OHLCToFeatures.js";
 import CSVReadWrite from "./CSVReadWrite.js";
-import { homepage, symbolClusterPage } from "./HomePageString.js";
+import { saveTrainingDatasets } from "./TrainingDataStore.js";
 
 const app  = express();
 const port = 8888;
@@ -92,7 +98,7 @@ let ticker = null;
 let accessToken = "";
 
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: "10mb" }));
 
 // ROOT Route - Serves the foundation to authenticated users
 app.get("/", async (req, res) => {
@@ -105,10 +111,7 @@ app.get("/", async (req, res) => {
     // Authenticated request
     console.log(`[INFO] Authenticated user: ${req.session.userID}`);
 
-    // Serve React frontend (or static HTML/SPA)
-    //res.sendFile(path.join(__dirname, "frontend", "dist", "index.html"));
-    //res.send(homepage);
-    res.send(symbolClusterPage);
+    res.sendFile(path.join(__dirname, "frontend", "dist", "index.html"));
 });
 
 // Serve the Login URL
@@ -190,25 +193,118 @@ app.get("/profile", async (req, res) => {
     }
 });
 
-// Backend API endpoint to return return OHLC for the requested Date
+app.get("/api/instruments", (req, res) => {
+    const query = typeof req.query.q === "string" ? req.query.q.trim().toUpperCase() : "";
+    if (!query) return res.json({ instruments: [] });
+
+    const instruments = Object.keys(INSTRUMENTS.NSE)
+        .filter((instrument) => instrument.includes(query))
+        .slice(0, 20);
+    res.json({ instruments });
+});
+
+// Return independent, initially unlabelled datasets for the labeling workspace.
 app.post("/api/ohlc", async (req, res) => {
-    //console.log(req);
-    const { symbol, date } = req.body;
-    console.log(`Symbol -> ${symbol} | Date -> ${date}`);
+    const symbol = typeof req.body?.symbol === "string"
+        ? req.body.symbol.trim().toUpperCase()
+        : "";
+    const date = typeof req.body?.date === "string" ? req.body.date : "";
+
+    if (!INSTRUMENTS.NSE[symbol]) {
+        return res.status(400).json({ error: "Select a valid NSE instrument." });
+    }
+
+    const selectedDate = dayjs(date);
+    if (
+        !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+        !selectedDate.isValid() ||
+        selectedDate.format("YYYY-MM-DD") !== date
+    ) {
+        return res.status(400).json({ error: "Provide a valid trading date in YYYY-MM-DD format." });
+    }
+    if ([0, 6].includes(selectedDate.day())) {
+        return res.status(400).json({ error: "Trading data is only available for weekdays." });
+    }
 
     try {
-        let ohlc = await fetchHistoricalData(symbol, date);
-        ohlc = ohlcToFeatures(ohlc, date, symbol);
-        console.log(`ohlc -> ${JSON.stringify(ohlc[0], null, "\t")}`);
-        const entryCandles = await writeEntryCandles(ohlc);
-        //console.log(`Entry Candles -> ${JSON.stringify(entryCandles.slice(0, 20), null, "\t")}`);
-        const exitCandles = await writeExitCandles(ohlc);
-        //console.log(`Exit Candles -> ${JSON.stringify(exitCandles.slice(0, 20), null, "\t")}`);
-        res.json(ohlc);
-        //res.json({ response: "WORKING!" });
+        const historicalData = await fetchHistoricalData(symbol, selectedDate);
+        if (historicalData.length === 0) {
+            return res.status(404).json({ error: "No candle data was found for that instrument and date." });
+        }
+        const candles = ohlcToFeatures(historicalData, selectedDate, symbol);
+
+        res.json({
+            candles,
+            entryCandles: candles.map((candle) => ({ ...candle, label: 0 })),
+            entryTypeCandles: candles.map((candle) => ({ ...candle, label: 0 })),
+            exitCandles: candles.map((candle) => ({ ...candle, label: 0 })),
+        });
     } catch (error) {
         console.error("Failed to fetch OHLC Data: ", error.message);
-        res.status(500).json({ error });
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.put("/api/save-labels", async (req, res) => {
+    const symbol = typeof req.body?.symbol === "string"
+        ? req.body.symbol.trim().toUpperCase()
+        : "";
+    const date = typeof req.body?.date === "string" ? req.body.date : "";
+    const { entryCandles, entryTypeCandles, exitCandles } = req.body ?? {};
+
+    if (!INSTRUMENTS.NSE[symbol]) {
+        return res.status(400).json({ error: "Select a valid NSE instrument." });
+    }
+
+    const selectedDate = dayjs(date);
+    if (
+        !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+        !selectedDate.isValid() ||
+        selectedDate.format("YYYY-MM-DD") !== date ||
+        [0, 6].includes(selectedDate.day())
+    ) {
+        return res.status(400).json({ error: "Provide a valid weekday in YYYY-MM-DD format." });
+    }
+
+    const datasets = { entryCandles, entryTypeCandles, exitCandles };
+    const rows = Object.values(datasets);
+    if (
+        rows.some((dataset) => !Array.isArray(dataset) || dataset.length === 0 || dataset.length > 500) ||
+        rows.some((dataset) => dataset.length !== entryCandles.length)
+    ) {
+        return res.status(400).json({ error: "Provide matching, non-empty candle arrays for all training datasets." });
+    }
+
+    for (let index = 0; index < entryCandles.length; index++) {
+        const sequence = entryCandles[index]?.candleSequence;
+        const entryType = entryTypeCandles[index];
+        const exit = exitCandles[index];
+        if (
+            sequence !== index + 1 ||
+            entryType?.candleSequence !== sequence ||
+            exit?.candleSequence !== sequence ||
+            [entryCandles[index], entryType, exit].some((candle) =>
+                !candle || candle.instrument !== symbol || !Number.isFinite(candle.label),
+            ) ||
+            ![0, 1].includes(entryCandles[index].label) ||
+            ![-1, 0, 1].includes(entryType.label) ||
+            ![0, 1].includes(exit.label)
+        ) {
+            return res.status(400).json({ error: "Candle rows or labels are invalid." });
+        }
+    }
+
+    try {
+        const saved = await saveTrainingDatasets(
+            path.join(__dirname, "Data"),
+            symbol,
+            date,
+            datasets,
+        );
+        res.json({ message: "Training labels saved successfully.", saved });
+    } catch (error) {
+        console.error("Failed to save training labels:", error.message);
+        res.status(500).json({ error: "Failed to save training labels." });
     }
 });
 
@@ -254,7 +350,7 @@ server.listen(port, (req, res) => {
 });
 
 async function createSuperClusterCSV(symbol) {
-    const startDate = "2024-01-01";
+    const startDate = OHLC_DATE;
     const today = dayjs();
     let day = dayjs(startDate);
 
@@ -363,7 +459,7 @@ async function fetchHistoricalData(symbol, date, days = 3, interval = "minute") 
 
 async function writeEntryCandles(ohlc) {
     
-    const targetProfit = 0.2;
+    const targetProfit = TARGET_PROFIT;
 
     let entryPrice = null;
     let exitPrice = null;
@@ -374,9 +470,10 @@ async function writeEntryCandles(ohlc) {
 
     const len = ohlc.length;
 
-    for (let i = 0; i < len - 1; i++) {
+    for (let i = 0; i < len - 2; i++) {
+        if (ohlc[i].candleSequence < CANDLE_START) continue;
         entered = false;
-        entryPrice = ohlc[i].open;
+        entryPrice = ohlc[i + 1].open;
         //console.log("i_0", i);
         trend = ohlc[i].candleColor;
         exitPrice = trend === "GREEN"
@@ -386,7 +483,7 @@ async function writeEntryCandles(ohlc) {
                 : ohlc[i].close
             );
         
-        for (let j = i + 1; j < len; j++) {
+        for (let j = i + 1; j < len - 1; j++) {
             exitPrice = trend === "GREEN"
                 ? Math.max(exitPrice, ohlc[j].high)
                 : (trend === "RED"
@@ -402,6 +499,7 @@ async function writeEntryCandles(ohlc) {
             ) {
                 entered = true;
                 ohlc[i].label = 1;
+                ohlc[i + 1].label = 1;
                 i = j - 1;
                 //console.log("i_1 G", i, "j", j);
                 break;
@@ -413,6 +511,7 @@ async function writeEntryCandles(ohlc) {
             ) {
                 entered = true;
                 ohlc[i].label = 1;
+                ohlc[i + 1].label = 1;
                 i = j - 1 ;
                 //console.log("i_1 R", i, "j", j);
                 break;
@@ -425,7 +524,7 @@ async function writeEntryCandles(ohlc) {
 
 async function writeEntryTypeCandles(ohlc) {
 
-    const targetProfit = 0.2;
+    const targetProfit = TARGET_PROFIT;
 
     let entryPrice = null;
     let exitPrice = null;
@@ -436,9 +535,10 @@ async function writeEntryTypeCandles(ohlc) {
 
     const len = ohlc.length;
 
-    for (let i = 0; i < len - 1; i++) {
+    for (let i = 0; i < len - 2; i++) {
+        if (ohlc[i].candleSequence < CANDLE_START) continue;
         entered = false;
-        entryPrice = ohlc[i].open;
+        entryPrice = ohlc[i + 1].open;
         //console.log("i_0", i);
         trend = ohlc[i].candleColor;
         exitPrice = trend === "GREEN"
@@ -448,7 +548,7 @@ async function writeEntryTypeCandles(ohlc) {
                 : ohlc[i].close
             );
         
-        for (let j = i + 1; j < len; j++) {
+        for (let j = i + 1; j < len - 1; j++) {
             exitPrice = trend === "GREEN"
                 ? Math.max(exitPrice, ohlc[j].high)
                 : (trend === "RED"
@@ -464,6 +564,7 @@ async function writeEntryTypeCandles(ohlc) {
             ) {
                 entered = true;
                 ohlc[i].label = 1;
+                ohlc[i + 1].label = 1;
                 i = j - 1;
                 //console.log("i_1 G", i, "j", j);
                 break;
@@ -475,6 +576,7 @@ async function writeEntryTypeCandles(ohlc) {
             ) {
                 entered = true;
                 ohlc[i].label = -1;
+                ohlc[i + 1].label = -1;
                 i = j - 1 ;
                 //console.log("i_1 R", i, "j", j);
                 break;
@@ -488,7 +590,7 @@ async function writeEntryTypeCandles(ohlc) {
 }
 
 async function writeExitCandles(ohlc) {
-    const targetProfit = 0.2;
+    const targetProfit = TARGET_PROFIT;
 
     let entryPrice = null;
     let exitPrice = null;
@@ -499,9 +601,10 @@ async function writeExitCandles(ohlc) {
 
     const len = ohlc.length;
 
-    for (let i = 0; i < len - 1; i++) {
+    for (let i = 0; i < len - 2; i++) {
+        if (ohlc[i].candleSequence < CANDLE_START) continue;
         entered = false;
-        entryPrice = ohlc[i].open;
+        entryPrice = ohlc[i + 1].open;
         //console.log("i_0", i);
         trend = ohlc[i].candleColor;
         exitPrice = trend === "GREEN"
@@ -511,7 +614,7 @@ async function writeExitCandles(ohlc) {
                 : ohlc[i].close
             );
         
-        for (let j = i + 1; j < len; j++) {
+        for (let j = i + 1; j < len - 1; j++) {
             exitPrice = trend === "GREEN"
                 ? Math.max(exitPrice, ohlc[j].high)
                 : (trend === "RED"
@@ -526,7 +629,8 @@ async function writeExitCandles(ohlc) {
                 !entered
             ) {
                 entered = true;
-                ohlc[j].label = -1;
+                ohlc[j].label = 1;
+                ohlc[j + 1].label = 1;
                 i = j - 1;
                 //console.log("i_1 G", i, "j", j);
                 break;
@@ -538,6 +642,7 @@ async function writeExitCandles(ohlc) {
             ) {
                 entered = true;
                 ohlc[j].label = 1;
+                ohlc[j + 1].label = 1;
                 i = j - 1 ;
                 //console.log("i_1 R", i, "j", j);
                 break;
@@ -545,7 +650,91 @@ async function writeExitCandles(ohlc) {
         } //console.log("i_2", i);
     }
 
-    ohlc = ohlc.filter(c => c.label !== 0);
+    //ohlc = ohlc.filter(c => c.label !== 0);
 
     return ohlc;
 }
+
+/*
+async function writeEntryCandles__(ohlc) {
+    
+    const targetProfit = TARGET_PROFIT;
+
+    let entryPrice = null;
+    let exitPrice = null;
+
+    let entered = false;
+
+    let trend = null;
+
+    const len = ohlc.length;
+
+    for (let i = 0; i < len - 2; i++) {
+        if (ohlc[i].candleSequence < CANDLE_START) continue;
+        entered = false;
+        entryPrice = ohlc[i + 1].open;
+        //console.log("i_0", i);
+        trend = ohlc[i].candleColor;
+        exitPrice = trend === "GREEN"
+            ? ohlc[i].high
+            : (trend === "RED"
+                ? ohlc[i].low
+                : ohlc[i].close
+            );
+        
+        let dipCount = 0;
+        let colorFlip = false;
+        
+        for (let j = i + 1; j < len - 1; j++) {
+            exitPrice = trend === "GREEN"
+                ? Math.max(exitPrice, ohlc[j].high)
+                : (trend === "RED"
+                    ? Math.min(exitPrice, ohlc[j].low)
+                    : ohlc[j]
+                )
+            const priceDiff = (exitPrice - entryPrice) / entryPrice * 100;
+
+            if (
+                ohlc[i].candleColor !== ohlc[j].candleColor &&
+                colorFlip === false
+            ) {
+                colorFlip = true;
+                dipCount++;
+            } else if (
+                ohlc[i].candleColor === ohlc[j].candleColor &&
+                colorFlip === true
+            ) {
+                colorFlip = false;
+            }
+
+            if (dipCount > 2) {
+                if (
+                    priceDiff >= targetProfit &&
+                    ohlc[i].candleColor === "GREEN" &&
+                    !entered
+                ) {
+                    entered = true;
+                    ohlc[i].label = 1;
+                    //ohlc[i + 1].label = 1;
+                    i = j - 1;
+                    break
+                } else if (
+                    priceDiff <= -targetProfit &&
+                    ohlc[i].candleColor === "RED" &&
+                    !entered
+                ) {
+                    entered = true;
+                    ohlc[i].label = 1;
+                    //ohlc[i + 1].label = 1;
+                    i = j - 1;
+                    break;
+                } else {
+                    break;
+                }
+            }
+        } //console.log("i_2", i);
+    }
+
+    return ohlc;
+}
+*/
